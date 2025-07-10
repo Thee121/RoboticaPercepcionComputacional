@@ -1,0 +1,79 @@
+import os
+import cv2
+import joblib
+import numpy as np
+from skimage.feature import hog
+from sklearn.neighbors import KNeighborsClassifier
+
+# Configuración HOG
+HOG_PARAMS = {
+    'pixels_per_cell': (8,8),
+    'cells_per_block': (2,2),
+    'orientations': 9,
+    'block_norm': 'L2-Hys',
+    'transform_sqrt': True
+}
+IMAGE_SIZE = (64, 64)
+
+# Incluimos 'arrows' como nueva clase
+labels_dict = {'Man':0, 'Woman':1, 'Telephone':2, 'Stairs':3, 'Arrow':4}
+labels_inv = {v: k for k, v in labels_dict.items()}
+
+data, labels = [], []
+
+for name, lbl in labels_dict.items():
+    folder = f"Imagenes_Marcas/{name}/"
+    if not os.path.exists(folder):
+        print(f"Carpeta no encontrada: {folder}. Se omite.")
+        continue
+
+    for fn in os.listdir(folder):
+        img_path = os.path.join(folder, fn)
+        img = cv2.imread(img_path)
+        if img is None:
+            continue
+
+        # Segmentación rojo en HSV
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        m1 = cv2.inRange(hsv, (0,100,50), (10,255,255))
+        m2 = cv2.inRange(hsv, (160,100,50), (180,255,255))
+        mask = cv2.bitwise_or(m1, m2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
+
+        # Buscar contornos
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            continue
+
+        cnt = max(cnts, key=cv2.contourArea)
+        if cv2.contourArea(cnt) < 300:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        roi = gray[y:y+h, x:x+w]
+
+        if roi.size == 0:
+            continue
+
+        roi = cv2.resize(roi, IMAGE_SIZE)
+        feat = hog(roi, **HOG_PARAMS)
+        data.append(feat)
+        labels.append(lbl)
+
+data = np.array(data)
+labels = np.array(labels)
+
+print("Entrenando KNN con HOG. Shape de data:", data.shape)
+knn = KNeighborsClassifier(n_neighbors=3)
+knn.fit(data, labels)
+
+joblib.dump({
+    'knn': knn,
+    'hog_params': HOG_PARAMS,
+    'image_size': IMAGE_SIZE,
+    'labels_inv': labels_inv
+}, "symbol_knn_hog.pkl")
+
+print("Modelo HOG+KNN entrenado y guardado en symbol_knn_hog.pkl")
